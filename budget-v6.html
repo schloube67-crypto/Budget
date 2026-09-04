@@ -307,11 +307,13 @@ canvas#pie { max-width:200px; max-height:200px; cursor:pointer; }
           <option value="Abonnements">📱 Abonnements</option>
           <option value="Achats en ligne">📦 Achats en ligne</option>
           <option value="Assurances">🛡️ Assurances</option>
+          <option value="Prêts">🏦 Prêts</option>
           <option value="Santé">💊 Santé</option>
           <option value="Épargne">💰 Épargne</option>
           <option value="Revenus">💶 Revenus</option>
-          <option value="Autre">• Autre</option>
+          <option value="__custom__">✏️ Autre (saisir…)</option>
         </select>
+        <input type="text" id="f-cat-custom" placeholder="Ex: Cadeaux, Animaux…" style="display:none;margin-top:8px">
       </div></div>
       <div class="frow">
         <div>
@@ -449,11 +451,13 @@ canvas#pie { max-width:200px; max-height:200px; cursor:pointer; }
         <option value="Abonnements">📱 Abonnements</option>
         <option value="Achats en ligne">📦 Achats en ligne</option>
         <option value="Assurances">🛡️ Assurances</option>
+        <option value="Prêts">🏦 Prêts</option>
         <option value="Santé">💊 Santé</option>
         <option value="Épargne">💰 Épargne</option>
         <option value="Revenus">💶 Revenus</option>
-        <option value="Autre">• Autre</option>
+        <option value="__custom__">✏️ Autre (saisir…)</option>
       </select>
+      <input type="text" id="mev-cat-custom" placeholder="Ex: Cadeaux, Animaux…" style="display:none;margin-top:8px">
     </div>
     <button class="btn-primary" onclick="confirmEditVar()">Enregistrer</button>
     <button class="btn-secondary" style="width:100%;margin-top:8px" onclick="closeModalVar()">Annuler</button>
@@ -503,8 +507,8 @@ const COLORS = {
   'Assurances':      '#8B9ED4',
   'Santé':           '#C4E05C',
   'Épargne':         '#C9A84C',
+  'Prêts':           '#A0C4FF',
   'Revenus':         '#82CF72',
-  'Autre':           '#7A8090',
 };
 
 function monthKey(y,m)  { return `${y}-${String(m+1).padStart(2,'0')}`; }
@@ -548,29 +552,55 @@ function effectiveAmount(sourceId, baseAmount, key) {
 // AUTO-CARRY: copies all fixed entries from prev month
 // Uses sourceId to track the root entry across months
 // ══════════════════════════════════════════════════════
-function autoCarry(key) {
-  if (injected.includes(key)) return;
+// Propagate a newly added fixed entry to all future months already in entries
+function propagateFixedToFutureMonths(entry) {
+  const srcId   = entry.sourceId || entry.id;
+  const fromKey = entry.month;
+  // find all months after fromKey that already exist in entries
+  const futureKeys = [...new Set(entries.map(e=>e.month))]
+    .filter(k=>k>fromKey)
+    .sort();
+  futureKeys.forEach(key => {
+    const alreadyThere = entries.some(e=>(e.sourceId===srcId||e.id===srcId)&&e.month===key);
+    if(alreadyThere) return;
+    const isDeleted = amendments.some(a=>a.sourceId===srcId&&a.fromKey<=key&&a.deleted);
+    if(isDeleted) return;
+    const amount = effectiveAmount(srcId, entry.amount, key);
+    entries.unshift({
+      id: Date.now()+Math.random(),
+      month: key,
+      name: entry.name,
+      amount,
+      cat: entry.cat,
+      type: entry.type,
+      nature: 'fixed',
+      date: todayStr(),
+      sourceId: srcId,
+    });
+  });
+  if(futureKeys.length) save();
+}
 
+function autoCarry(key) {
   const prev     = prevKey(key);
   const prevEnts = entriesForKey(prev).filter(e=>e.nature==='fixed');
+  if (!prevEnts.length) return;
 
-  // collect sourceIds already present in target month to avoid duplicates
+  // sourceIds already in target month (manually entered or already carried)
   const existing = new Set(
     entriesForKey(key).map(e=>e.sourceId||e.id)
   );
 
+  let changed = false;
   prevEnts.forEach(e => {
-    const srcId = e.sourceId || e.id; // root id
+    const srcId = e.sourceId || e.id;
     if (existing.has(srcId)) return;
 
-    // check if this root was deleted from this month onward
     const isDeleted = amendments.some(a=>a.sourceId===srcId && a.fromKey<=key && a.deleted);
     if (isDeleted) return;
 
-    // check if paused for this month
     const isPaused = amendments.some(a=>a.sourceId===srcId && a.fromKey<=key && a.paused && !a.unpaused);
-
-    const amount = effectiveAmount(srcId, e.amount, key);
+    const amount   = effectiveAmount(srcId, e.amount, key);
 
     entries.unshift({
       id: Date.now() + Math.random(),
@@ -585,10 +615,10 @@ function autoCarry(key) {
       paused: isPaused,
     });
     existing.add(srcId);
+    changed = true;
   });
 
-  injected.push(key);
-  save();
+  if (changed) save();
 }
 
 // ══════════════════════════════════════════════════════
@@ -620,7 +650,7 @@ function addEntry() {
   const name   = document.getElementById('f-name').value.trim();
   const amount = parseFloat(document.getElementById('f-amount').value);
   const date   = document.getElementById('f-date').value || todayStr();
-  const cat    = document.getElementById('f-cat').value;
+  const cat    = getCategory('f-cat','f-cat-custom');
   const type   = document.querySelector('input[name=ftype]:checked').value;
   const nature = document.querySelector('input[name=fnature]:checked').value;
   if(!name)          {shake('f-name');   return;}
@@ -630,10 +660,16 @@ function addEntry() {
   // for fixed entries, sourceId = own id (they are the root)
   if(nature==='fixed') entry.sourceId = entry.id;
   entries.unshift(entry);
-  save(); render();
+  save();
+  // if fixed, propagate to future months already visited
+  if(nature==='fixed') propagateFixedToFutureMonths(entry);
+  render();
   document.getElementById('f-name').value   = '';
   document.getElementById('f-amount').value = '';
   document.getElementById('f-date').value   = todayStr();
+  document.getElementById('f-cat').value = 'Logement';
+  document.getElementById('f-cat-custom').style.display='none';
+  document.getElementById('f-cat-custom').value='';
   toast('Ajouté ✓');
 }
 
@@ -647,7 +683,17 @@ function openEditVar(id) {
   document.getElementById('mev-name').value   = e.name;
   document.getElementById('mev-amount').value = e.amount;
   document.getElementById('mev-date').value   = e.date||todayStr();
-  document.getElementById('mev-cat').value    = e.cat;
+  const knownCats = ['Logement','Alimentation','Boucherie','Fruits & légumes','Restaurants',
+    'Transport','Loisirs','Abonnements','Achats en ligne','Assurances','Prêts',
+    'Santé','Épargne','Revenus'];
+  if(knownCats.includes(e.cat)) {
+    document.getElementById('mev-cat').value = e.cat;
+    document.getElementById('mev-cat-custom').style.display = 'none';
+  } else {
+    document.getElementById('mev-cat').value = '__custom__';
+    document.getElementById('mev-cat-custom').value = e.cat;
+    document.getElementById('mev-cat-custom').style.display = 'block';
+  }
   document.getElementById('modal-edit-var').classList.add('open');
   setTimeout(()=>document.getElementById('mev-name').focus(),200);
 }
@@ -656,7 +702,7 @@ function confirmEditVar() {
   const name   = document.getElementById('mev-name').value.trim();
   const amount = parseFloat(document.getElementById('mev-amount').value);
   const date   = document.getElementById('mev-date').value;
-  const cat    = document.getElementById('mev-cat').value;
+  const cat    = getCategory('mev-cat','mev-cat-custom');
   if(!name)          {shake('mev-name');   return;}
   if(!amount||amount<=0){shake('mev-amount'); return;}
   const e = entries.find(e=>e.id===editingVarId);
@@ -725,14 +771,15 @@ function deleteFixed(id) {
   const e = entries.find(e=>e.id===id);
   if(!e) return;
   if(!confirm(`Supprimer "${e.name}" des charges fixes ?\nLes mois passés sont conservés.`)) return;
-  const srcId = e.sourceId||e.id;
+  const srcId = e.sourceId || e.id;
   const key   = currentKey();
-  amendments  = amendments.filter(a=>a.sourceId!==srcId);
+  // remove amendment conflicts then mark as deleted from now on
+  amendments = amendments.filter(a=>!(a.sourceId===srcId && !a.deleted));
   amendments.push({sourceId:srcId, fromKey:key, deleted:true, amount:0});
-  // remove from current + future months
-  entries = entries.filter(e=>{
-    const s=e.sourceId||e.id;
-    return !(s===srcId && e.month>=key);
+  // remove all copies in current and future months
+  entries = entries.filter(e2=>{
+    const s = e2.sourceId || e2.id;
+    return !(s===srcId && e2.month>=key);
   });
   save(); renderRecurrents(); render();
   toast('Supprimé');
@@ -1045,6 +1092,28 @@ document.getElementById('mef-amount').addEventListener('keydown',e=>{
 document.getElementById('mev-name').addEventListener('keydown',e=>{
   if(e.key==='Enter')document.getElementById('mev-amount').focus();
 });
+// Custom category toggle
+document.getElementById('f-cat').addEventListener('change', function() {
+  const custom = document.getElementById('f-cat-custom');
+  custom.style.display = this.value === '__custom__' ? 'block' : 'none';
+  if(this.value === '__custom__') custom.focus();
+});
+document.getElementById('mev-cat').addEventListener('change', function() {
+  const custom = document.getElementById('mev-cat-custom');
+  custom.style.display = this.value === '__custom__' ? 'block' : 'none';
+  if(this.value === '__custom__') custom.focus();
+});
+
+// Helper: get effective category from select + optional custom input
+function getCategory(selectId, customId) {
+  const val = document.getElementById(selectId).value;
+  if(val === '__custom__') {
+    const custom = document.getElementById(customId).value.trim();
+    return custom || 'Autre';
+  }
+  return val;
+}
+
 document.getElementById('f-name').addEventListener('keydown',e=>{
   if(e.key==='Enter')document.getElementById('f-amount').focus();
 });
